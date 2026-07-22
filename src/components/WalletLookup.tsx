@@ -1,7 +1,12 @@
 import { useState } from 'react'
 import { useLanguage } from '../contexts/LanguageContext'
-import { walletGetBalances, walletGetHistory, getSOLBalance, getWalletTokenBalances, TOKEN_MINTS, TOKEN_DECIMALS, HeliusConfig } from '../lib/helius'
-import type { WalletBalance, WalletHistoryItem } from '../lib/helius'
+import {
+  walletGetBalances, walletGetHistory, walletGetTransfers,
+  getSOLBalance, getWalletTokenBalances,
+  dasGetTokenAccounts,
+  TOKEN_MINTS, TOKEN_DECIMALS, HeliusConfig,
+} from '../lib/helius'
+import type { WalletBalance, WalletHistoryItem, WalletTransfer } from '../lib/helius'
 
 interface WalletResult {
   solBalance: number
@@ -9,6 +14,8 @@ interface WalletResult {
   walletApiBalances: WalletBalance[]
   totalUsd: number | null
   history: WalletHistoryItem[]
+  transfers: WalletTransfer[]
+  dasTokenAccounts: any[]
 }
 
 export default function WalletLookup() {
@@ -17,6 +24,7 @@ export default function WalletLookup() {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<WalletResult | null>(null)
   const [error, setError] = useState('')
+  const [activeTab, setActiveTab] = useState<'balances' | 'history' | 'transfers' | 'das'>('balances')
 
   const query = async () => {
     if (!address.trim()) {
@@ -29,12 +37,14 @@ export default function WalletLookup() {
     setResult(null)
 
     try {
-      // Use Helius Wallet API + RPC in parallel
-      const [solBal, tokenBals, walletApi, history] = await Promise.all([
+      // Use Helius Wallet API + RPC + DAS in parallel
+      const [solBal, tokenBals, walletApi, history, transfers, dasAccounts] = await Promise.all([
         getSOLBalance(address.trim()),
         getWalletTokenBalances(address.trim()),
         walletGetBalances(address.trim()),
         walletGetHistory(address.trim(), 10),
+        walletGetTransfers(address.trim(), 10),
+        dasGetTokenAccounts(address.trim()),
       ])
 
       setResult({
@@ -43,6 +53,8 @@ export default function WalletLookup() {
         walletApiBalances: walletApi.tokens || [],
         totalUsd: walletApi.total_usd_value,
         history: history || [],
+        transfers: transfers || [],
+        dasTokenAccounts: dasAccounts || [],
       })
     } catch (err) {
       setError(t.noResults)
@@ -108,69 +120,158 @@ export default function WalletLookup() {
               </div>
             </div>
 
-            {/* Token Balances */}
-            <div>
-              <div className="text-xs text-gray-500 mb-2">{t.tokenBalances}</div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                {Object.entries(result.tokenBalances).map(([mint, bal]) => {
-                  const symbol = tokenSymbols[mint] || mint.slice(0, 8)
-                  return (
-                    <div key={mint} className="rounded-lg bg-[#0a0a0f] border border-white/5 p-2.5">
-                      <div className="text-xs text-gray-500">{symbol}</div>
-                      <div className="font-mono text-sm text-gray-200 mt-0.5">
-                        {bal > 0 ? bal.toFixed(bal < 1 ? 6 : 2) : '0'}
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
+            {/* Tab Navigation */}
+            <div className="flex gap-1 border-b border-white/5 pb-1">
+              {([
+                { key: 'balances', label: t.tokenBalances },
+                { key: 'history', label: t.txHistory },
+                { key: 'transfers', label: t.transfers },
+                { key: 'das', label: 'DAS' },
+              ] as const).map(tab => (
+                <button
+                  key={tab.key}
+                  onClick={() => setActiveTab(tab.key)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                    activeTab === tab.key
+                      ? 'bg-purple-600/20 text-purple-300'
+                      : 'text-gray-500 hover:text-gray-300'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
             </div>
 
-            {/* Transaction History */}
-            {result.history.length > 0 && (
-              <div>
-                <div className="text-xs text-gray-500 mb-2">{t.txHistory}</div>
-                <div className="space-y-1 max-h-48 overflow-y-auto">
-                  {result.history.map((tx, idx) => (
-                    <div key={idx} className="flex items-center gap-2 rounded-lg bg-[#0a0a0f] border border-white/5 p-2 text-xs">
-                      <span className="text-gray-600 font-mono shrink-0">
-                        {tx.timestamp ? new Date(tx.timestamp * 1000).toLocaleDateString() : '--'}
-                      </span>
-                      <span className="text-gray-400 truncate flex-1">{tx.description || tx.type}</span>
-                      <a
-                        href={`https://solscan.io/tx/${tx.signature}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-purple-400 hover:text-purple-300 shrink-0"
-                      >
-                        {tx.signature.slice(0, 6)}...
-                      </a>
-                    </div>
-                  ))}
+            {/* Tab: Balances */}
+            {activeTab === 'balances' && (
+              <div className="space-y-3">
+                {/* RPC Token Balances */}
+                <div>
+                  <div className="text-xs text-gray-500 mb-2">{t.tokenBalances} (RPC)</div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {Object.entries(result.tokenBalances).map(([mint, bal]) => {
+                      const symbol = tokenSymbols[mint] || mint.slice(0, 8)
+                      return (
+                        <div key={mint} className="rounded-lg bg-[#0a0a0f] border border-white/5 p-2.5">
+                          <div className="text-xs text-gray-500">{symbol}</div>
+                          <div className="font-mono text-sm text-gray-200 mt-0.5">
+                            {bal > 0 ? bal.toFixed(bal < 1 ? 6 : 2) : '0'}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
                 </div>
+
+                {/* Helius Wallet API data */}
+                {result.walletApiBalances.length > 0 && (
+                  <div>
+                    <div className="text-xs text-gray-500 mb-2">{t.tokenBalances} (Helius Wallet API)</div>
+                    <div className="space-y-1 max-h-32 overflow-y-auto">
+                      {result.walletApiBalances.slice(0, 10).map((tok, idx) => (
+                        <div key={idx} className="flex items-center justify-between rounded-lg bg-[#0a0a0f] border border-white/5 p-2 text-xs">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-gray-300">{tok.symbol}</span>
+                            <span className="text-gray-600">{tok.name}</span>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <span className="font-mono text-gray-300">{tok.amount.toFixed(4)}</span>
+                            {tok.usd_value !== null && (
+                              <span className="font-mono text-green-400">${tok.usd_value.toFixed(2)}</span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
-            {/* Helius Wallet API data */}
-            {result.walletApiBalances.length > 0 && (
+            {/* Tab: History */}
+            {activeTab === 'history' && (
               <div>
-                <div className="text-xs text-gray-500 mb-2">{t.tokenBalances} (Helius Wallet API)</div>
-                <div className="space-y-1 max-h-32 overflow-y-auto">
-                  {result.walletApiBalances.slice(0, 10).map((tok, idx) => (
-                    <div key={idx} className="flex items-center justify-between rounded-lg bg-[#0a0a0f] border border-white/5 p-2 text-xs">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium text-gray-300">{tok.symbol}</span>
-                        <span className="text-gray-600">{tok.name}</span>
+                {result.history.length > 0 ? (
+                  <div className="space-y-1 max-h-64 overflow-y-auto">
+                    {result.history.map((tx, idx) => (
+                      <div key={idx} className="flex items-center gap-2 rounded-lg bg-[#0a0a0f] border border-white/5 p-2 text-xs">
+                        <span className="text-gray-600 font-mono shrink-0">
+                          {tx.timestamp ? new Date(tx.timestamp * 1000).toLocaleDateString() : '--'}
+                        </span>
+                        <span className="text-gray-400 truncate flex-1">{tx.description || tx.type}</span>
+                        <a
+                          href={`https://solscan.io/tx/${tx.signature}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-purple-400 hover:text-purple-300 shrink-0"
+                        >
+                          {tx.signature.slice(0, 6)}...
+                        </a>
                       </div>
-                      <div className="flex items-center gap-3">
-                        <span className="font-mono text-gray-300">{tok.amount.toFixed(4)}</span>
-                        {tok.usd_value !== null && (
-                          <span className="font-mono text-green-400">${tok.usd_value.toFixed(2)}</span>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-xs text-gray-600 text-center py-4">{t.noData}</div>
+                )}
+              </div>
+            )}
+
+            {/* Tab: Transfers */}
+            {activeTab === 'transfers' && (
+              <div>
+                {result.transfers.length > 0 ? (
+                  <div className="space-y-1 max-h-64 overflow-y-auto">
+                    {result.transfers.map((tx, idx) => (
+                      <div key={idx} className="rounded-lg bg-[#0a0a0f] border border-white/5 p-2 text-xs">
+                        <div className="flex items-center gap-2">
+                          <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
+                            tx.direction === 'in' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                          }`}>
+                            {tx.direction === 'in' ? 'IN' : 'OUT'}
+                          </span>
+                          <span className="text-gray-600 font-mono shrink-0">
+                            {tx.timestamp ? new Date(tx.timestamp * 1000).toLocaleDateString() : '--'}
+                          </span>
+                          <span className="text-gray-300 font-mono ml-auto">
+                            {tx.amount.toFixed(tx.amount < 1 ? 6 : 2)}
+                          </span>
+                        </div>
+                        <div className="text-gray-600 mt-0.5 font-mono">
+                          {tx.from_address?.slice(0, 8)}...{'->'}{tx.to_address?.slice(0, 8)}...
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-xs text-gray-600 text-center py-4">{t.noData}</div>
+                )}
+              </div>
+            )}
+
+            {/* Tab: DAS Token Accounts */}
+            {activeTab === 'das' && (
+              <div>
+                {result.dasTokenAccounts.length > 0 ? (
+                  <div className="space-y-1 max-h-64 overflow-y-auto">
+                    {result.dasTokenAccounts.map((acc, idx) => (
+                      <div key={idx} className="rounded-lg bg-[#0a0a0f] border border-white/5 p-2 text-xs">
+                        <div className="flex items-center justify-between">
+                          <span className="text-gray-400 font-mono">
+                            {acc.address?.slice(0, 12) || '?'}...
+                          </span>
+                          <span className="text-green-400 font-mono">
+                            {acc.amount || '--'}
+                          </span>
+                        </div>
+                        {acc.mint && (
+                          <div className="text-gray-600 mt-0.5 font-mono">Mint: {acc.mint.slice(0, 12)}...</div>
                         )}
                       </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-xs text-gray-600 text-center py-4">{t.noData}</div>
+                )}
               </div>
             )}
           </div>
