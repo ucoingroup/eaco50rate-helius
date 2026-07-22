@@ -123,6 +123,13 @@ export interface Translation {
   type: string
   fee: string
   description: string
+  feeLevel: string
+  customFeeEstimate: string
+  enterSignature: string
+  low: string
+  medium: string
+  high: string
+  critical: string
 }
 
 const en: Translation = {
@@ -226,6 +233,13 @@ const en: Translation = {
   type: 'Type',
   fee: 'Fee',
   description: 'Description',
+  feeLevel: 'Fee Level',
+  customFeeEstimate: 'Custom Transaction Fee Estimate',
+  enterSignature: 'Enter transaction signature...',
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  critical: 'Critical',
 }
 
 const zh: Translation = {
@@ -329,6 +343,13 @@ const zh: Translation = {
   type: '类型',
   fee: '费用',
   description: '描述',
+  feeLevel: '费用等级',
+  customFeeEstimate: '自定义交易费用估算',
+  enterSignature: '输入交易签名...',
+  low: '低',
+  medium: '中',
+  high: '高',
+  critical: '极高',
 }
 
 const es: Translation = {
@@ -394,6 +415,13 @@ const es: Translation = {
   connecting: 'Conectando...',
   copy: 'Copiar',
   copied: 'Copiado!',
+  feeLevel: 'Nivel de tarifa',
+  customFeeEstimate: 'Estimacion de tarifa personalizada',
+  enterSignature: 'Ingrese firma de transaccion...',
+  low: 'Bajo',
+  medium: 'Medio',
+  high: 'Alto',
+  critical: 'Critico',
 }
 
 const fr: Translation = {
@@ -459,6 +487,13 @@ const fr: Translation = {
   connecting: 'Connexion...',
   copy: 'Copier',
   copied: 'Copie!',
+  feeLevel: 'Niveau de frais',
+  customFeeEstimate: 'Estimation des frais de transaction personnalisee',
+  enterSignature: 'Entrez la signature de transaction...',
+  low: 'Bas',
+  medium: 'Moyen',
+  high: 'Eleve',
+  critical: 'Critique',
 }
 
 const ar: Translation = {
@@ -524,6 +559,13 @@ const ar: Translation = {
   connecting: 'جاري الاتصال...',
   copy: 'نسخ',
   copied: 'تم النسخ!',
+  feeLevel: 'مستوى الرسوم',
+  customFeeEstimate: 'تقدير رسوم المعاملة المخصصة',
+  enterSignature: 'أدخل توقيع المعاملة...',
+  low: 'منخفض',
+  medium: 'متوسط',
+  high: 'عالي',
+  critical: 'حرج',
 }
 
 const ru: Translation = {
@@ -588,7 +630,14 @@ const ru: Translation = {
   disconnect: 'OTKJIIo4NTb',
   connecting: 'IIoDKJIIO4eHNe...',
   copy: 'KOnNpoBaTb',
-  copied: 'CKOnNpoBaHo!',
+  copied: 'CKonNpoBaHo!',
+  feeLevel: 'YpoBeHb nJIIaTbI',
+  customFeeEstimate: 'OHJIa9I OL[eHKa TpaH3aKL{N',
+  enterSignature: 'BBeDNTe noDnNCb TpaH3aKL{NN...',
+  low: 'HN3KNN',
+  medium: 'CpeDHNi',
+  high: 'BbICOKNi',
+  critical: 'KpNTNYeCKNN',
 }
 
 export const translations: Record<Lang, Translation> = { en, zh, es, fr, ar, ru }
