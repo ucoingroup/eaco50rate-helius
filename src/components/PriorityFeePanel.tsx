@@ -25,7 +25,7 @@ export default function PriorityFeePanel() {
 
   useEffect(() => {
     fetchFee()
-    const interval = setInterval(fetchFee, 30_000)
+    const interval = setInterval(fetchFee, 1_800_000) // 30 minutes
     return () => clearInterval(interval)
   }, [fetchFee])
 
