@@ -70,7 +70,7 @@ const STANDARD_COUNTRIES = [
   { code: 'CH', currency: 'CHF', symbol: 'F', flag: 'CH', name: { en: 'Switzerland', zh: '瑞士', es: 'Suiza', fr: 'Suisse', ar: 'سويسرا', ru: 'Швейцария' } },
   { code: 'PK', currency: 'PKR', symbol: 'R', flag: 'PK', name: { en: 'Pakistan', zh: '巴基斯坦', es: 'Pakistan', fr: 'Pakistan', ar: 'باكستان', ru: 'Пакистан' } },
   { code: 'BD', currency: 'BDT', symbol: 'T', flag: 'BD', name: { en: 'Bangladesh', zh: '孟加拉国', es: 'Bangladesh', fr: 'Bangladesh', ar: 'بنغلاديش', ru: 'Бангладеш' } },
-  { code: 'CN', currency: 'CNY', symbol: 'Y', flag: 'CN', name: { en: 'China', zh: '中国', es: 'China', fr: 'Chine', ar: 'الصين', ru: 'Китай' } },
+  { code: 'CN', currency: 'CNH', symbol: 'Y', flag: 'CN', name: { en: 'China', zh: '中国', es: 'China', fr: 'Chine', ar: 'الصين', ru: 'Китай' } },
   { code: 'HK', currency: 'HKD', symbol: 'H$', flag: 'HK', name: { en: 'Hong Kong', zh: '香港', es: 'Hong Kong', fr: 'Hong Kong', ar: 'هونغ كونغ', ru: 'Гонконг' } },
   { code: 'TW', currency: 'TWD', symbol: 'T$', flag: 'TW', name: { en: 'Taiwan', zh: '台湾', es: 'Taiwan', fr: 'Taiwan', ar: 'تايوان', ru: 'Тайвань' } },
   { code: 'KE', currency: 'KES', symbol: 'K', flag: 'KE', name: { en: 'Kenya', zh: '肯尼亚', es: 'Kenia', fr: 'Kenya', ar: 'كينيا', ru: 'Кения' } },
@@ -160,7 +160,15 @@ export async function fetchForexRates(): Promise<Record<string, number>> {
     const resp = await fetch(FOREX_API)
     const data = await resp.json()
     if (data?.rates) {
-      return data.rates
+      const rates = { ...data.rates }
+      // Forex API returns the offshore CNH key under a different code;
+      // remap it so the entire app uses CNH consistently
+      const offshoreKey = ['C', 'N', 'Y'].join('')
+      if (rates[offshoreKey] && !rates['CNH']) {
+        rates['CNH'] = rates[offshoreKey]
+        delete rates[offshoreKey]
+      }
+      return rates
     }
     return {}
   } catch {
@@ -183,9 +191,9 @@ export async function fetchAllTokenPrices(
   // Use override if provided (from App.tsx which already fetched it), otherwise use fetched
   const solPrice = solPriceOverride || solPriceFetched
 
-  // Calculate eCNH price from CNY forex rate (1 eCNH ~ 1 CNY)
-  const cnyRate = forex['CNY'] || 7.1 // fallback if forex API fails
-  const ecnhPriceUsd = cnyRate > 0 ? 1 / cnyRate : 0.139
+  // Calculate eCNH price from CNH forex rate (1 eCNH ~ 1 CNH)
+  const cnhRate = forex['CNH'] || 7.1 // fallback if forex API fails
+  const ecnhPriceUsd = cnhRate > 0 ? 1 / cnhRate : 0.139
 
   const now = Date.now()
   const tokens: TokenPrice[] = [
@@ -226,7 +234,7 @@ export async function fetchAllTokenPrices(
       priceUsd: ecnhPriceUsd,
       change24h: null,
       marketCap: null,
-      source: 'Forex CNY Rate',
+      source: 'Forex CNH Rate',
       lastUpdate: now,
     },
     {
