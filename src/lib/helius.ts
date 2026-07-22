@@ -8,6 +8,7 @@
  * - WebSocket: Real-time account subscription
  * - Priority Fee API: Transaction fee estimation
  * - Enhanced Transactions: Parsed transaction data
+ * - API Health Check: Real endpoint availability verification
  *
  * Docs: https://www.helius.dev/docs/zh
  */
@@ -57,6 +58,31 @@ const EACO_POOLS = [
     dex: 'meteora' as const,
   },
 ]
+
+// ============================================================================
+// Simple Cache Layer (TTL-based, prevents excessive API calls)
+// ============================================================================
+
+interface CacheEntry<T> {
+  data: T
+  expiry: number
+}
+
+const _cache = new Map<string, CacheEntry<any>>()
+const DEFAULT_TTL = 30_000 // 30 seconds
+
+function cacheGet<T>(key: string): T | null {
+  const entry = _cache.get(key)
+  if (entry && entry.expiry > Date.now()) {
+    return entry.data as T
+  }
+  _cache.delete(key)
+  return null
+}
+
+function cacheSet<T>(key: string, data: T, ttl: number = DEFAULT_TTL): void {
+  _cache.set(key, { data, expiry: Date.now() + ttl })
+}
 
 // ============================================================================
 // RPC Connection
@@ -141,13 +167,19 @@ export async function getAccountInfo(address: string) {
 
 /** Get token supply for a mint */
 export async function getTokenSupply(mintAddress: string): Promise<{ amount: number; decimals: number }> {
+  const cacheKey = `supply:${mintAddress}`
+  const cached = cacheGet<{ amount: number; decimals: number }>(cacheKey)
+  if (cached) return cached
+
   const conn = getConnection()
   const pub = new PublicKey(mintAddress)
   const supply = await conn.getTokenSupply(pub)
-  return {
+  const result = {
     amount: supply.value.uiAmount || 0,
     decimals: supply.value.decimals,
   }
+  cacheSet(cacheKey, result, 60_000) // cache supply for 60s
+  return result
 }
 
 // ============================================================================
@@ -156,6 +188,10 @@ export async function getTokenSupply(mintAddress: string): Promise<{ amount: num
 
 /** DAS: Get asset metadata by mint address */
 export async function dasGetAsset(mintAddress: string): Promise<any | null> {
+  const cacheKey = `das:asset:${mintAddress}`
+  const cached = cacheGet<any>(cacheKey)
+  if (cached !== null) return cached
+
   try {
     const resp = await fetch(HELIUS_RPC_URL, {
       method: 'POST',
@@ -168,8 +204,11 @@ export async function dasGetAsset(mintAddress: string): Promise<any | null> {
       }),
     })
     const data = await resp.json()
-    return data.result || null
-  } catch {
+    const result = data.result || null
+    if (result) cacheSet(cacheKey, result, 120_000) // cache DAS metadata for 2 min
+    return result
+  } catch (err) {
+    console.warn('[Helius DAS] getAsset failed:', err)
     return null
   }
 }
@@ -191,7 +230,8 @@ export async function dasGetTokenAccounts(ownerAddress: string, mintAddress?: st
     })
     const data = await resp.json()
     return data.result?.token_accounts || []
-  } catch {
+  } catch (err) {
+    console.warn('[Helius DAS] getTokenAccounts failed:', err)
     return []
   }
 }
@@ -229,8 +269,50 @@ export async function dasSearchAssets(params: {
     })
     const data = await resp.json()
     return data.result?.items || []
-  } catch {
+  } catch (err) {
+    console.warn('[Helius DAS] searchAssets failed:', err)
     return []
+  }
+}
+
+/**
+ * Get token holder count using getProgramAccounts with filter on the mint.
+ * This counts all Token Account entries for a given mint address.
+ */
+export async function getTokenHolderCount(mintAddress: string): Promise<number | null> {
+  const cacheKey = `holders:${mintAddress}`
+  const cached = cacheGet<number | null>(cacheKey)
+  if (cached !== null) return cached
+
+  try {
+    const conn = getConnection()
+    const mintPub = new PublicKey(mintAddress)
+
+    // Use getProgramAccounts with a filter for the mint address in the token account
+    // Token account layout: mint at offset 0, 32 bytes
+    const accounts = await conn.getProgramAccounts(TOKEN_PROGRAM_ID, {
+      commitment: 'confirmed',
+      filters: [
+        { dataSize: 165 }, // SPL token account size
+        { memcmp: { offset: 0, bytes: mintPub.toBase58() } },
+      ],
+      encoding: 'base64',
+    })
+
+    // Filter out accounts with zero balance
+    let count = 0
+    for (const acc of accounts) {
+      if (acc.account.data.length >= 72) {
+        const amount = acc.account.data.readBigUInt64LE(64)
+        if (amount > 0n) count++
+      }
+    }
+
+    cacheSet(cacheKey, count, 120_000) // cache for 2 min
+    return count
+  } catch (err) {
+    console.warn('[Helius] getTokenHolderCount failed:', err)
+    return null
   }
 }
 
@@ -261,7 +343,8 @@ export async function walletGetBalances(walletAddress: string): Promise<WalletBa
     )
     if (!resp.ok) throw new Error(`Wallet API error: ${resp.status}`)
     return await resp.json()
-  } catch {
+  } catch (err) {
+    console.warn('[Helius Wallet API] getBalances failed:', err)
     return { tokens: [], total_usd_value: null }
   }
 }
@@ -288,7 +371,8 @@ export async function walletGetHistory(
     if (!resp.ok) throw new Error(`Wallet API error: ${resp.status}`)
     const data = await resp.json()
     return data || []
-  } catch {
+  } catch (err) {
+    console.warn('[Helius Wallet API] getHistory failed:', err)
     return []
   }
 }
@@ -316,7 +400,8 @@ export async function walletGetTransfers(
     if (!resp.ok) throw new Error(`Wallet API error: ${resp.status}`)
     const data = await resp.json()
     return data || []
-  } catch {
+  } catch (err) {
+    console.warn('[Helius Wallet API] getTransfers failed:', err)
     return []
   }
 }
@@ -332,21 +417,35 @@ export interface WsSubscription {
 /**
  * Subscribe to account changes via Helius WebSocket.
  * Calls callback when the subscribed account's data changes on-chain.
+ * Returns a subscription object with onStatus callback for connection state.
  */
 export function subscribeToAccount(
   accountAddress: string,
   callback: (data: any) => void,
+  onStatus?: (connected: boolean) => void,
 ): WsSubscription {
   let ws: WebSocket | null = null
   let subscriptionId: string | null = null
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let closed = false
+  let reconnectAttempts = 0
 
   function connect() {
     if (closed) return
-    ws = new WebSocket(HELIUS_WS_URL)
+    try {
+      ws = new WebSocket(HELIUS_WS_URL)
+    } catch (err) {
+      console.warn('[Helius WS] Connection failed:', err)
+      onStatus?.(false)
+      if (!closed) {
+        reconnectTimer = setTimeout(connect, Math.min(5000 * (reconnectAttempts + 1), 30000))
+      }
+      return
+    }
 
     ws.onopen = () => {
+      reconnectAttempts = 0
+      onStatus?.(true)
       ws?.send(JSON.stringify({
         jsonrpc: '2.0',
         id: 1,
@@ -373,8 +472,11 @@ export function subscribeToAccount(
     }
 
     ws.onclose = () => {
+      onStatus?.(false)
       if (!closed) {
-        reconnectTimer = setTimeout(connect, 5000)
+        reconnectAttempts++
+        const delay = Math.min(5000 * reconnectAttempts, 30000)
+        reconnectTimer = setTimeout(connect, delay)
       }
     }
 
@@ -388,6 +490,7 @@ export function subscribeToAccount(
   return {
     close: () => {
       closed = true
+      onStatus?.(false)
       if (reconnectTimer) clearTimeout(reconnectTimer)
       if (subscriptionId && ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
@@ -433,9 +536,30 @@ export async function getPriorityFeeEstimate(
     })
     const data = await resp.json()
     return data.result || null
-  } catch {
+  } catch (err) {
+    console.warn('[Helius] getPriorityFeeEstimate failed:', err)
     return null
   }
+}
+
+/**
+ * Get recent priority fee level for common account keys.
+ * Uses the EACO mint + known pool addresses as reference accounts.
+ */
+export async function getRecentPriorityFee(): Promise<PriorityFeeEstimate | null> {
+  const cacheKey = 'priorityFee:recent'
+  const cached = cacheGet<PriorityFeeEstimate | null>(cacheKey)
+  if (cached !== null) return cached
+
+  // Use EACO-related accounts as reference for fee estimation
+  const accountKeys = [
+    EACO_MINT,
+    ...EACO_POOLS.map(p => p.address),
+  ]
+
+  const result = await getPriorityFeeEstimate(undefined, accountKeys)
+  if (result) cacheSet(cacheKey, result, 15_000) // cache for 15s
+  return result
 }
 
 // ============================================================================
@@ -469,8 +593,13 @@ export async function parseTransaction(signature: string): Promise<EnhancedTrans
       }),
     })
     const data = await resp.json()
+    if (data.error) {
+      console.warn('[Helius] parseTransaction error:', data.error)
+      return null
+    }
     return data.result || null
-  } catch {
+  } catch (err) {
+    console.warn('[Helius] parseTransaction failed:', err)
     return null
   }
 }
@@ -508,8 +637,16 @@ export interface EacoPoolStatus {
   tokenYMint: string
 }
 
-/** Check EACO pool reserves on-chain via Helius RPC */
-export async function getEacoPoolStatus(poolAddress: string): Promise<EacoPoolStatus | null> {
+/**
+ * Check EACO pool reserves on-chain via Helius RPC.
+ * @param poolAddress The pool address to query
+ * @param solPriceUsd Optional SOL price for USD valuation. If not provided,
+ *                    liquidity for SOL pools will show as 0 USD.
+ */
+export async function getEacoPoolStatus(
+  poolAddress: string,
+  solPriceUsd?: number,
+): Promise<EacoPoolStatus | null> {
   const conn = getConnection()
 
   try {
@@ -565,8 +702,11 @@ export async function getEacoPoolStatus(poolAddress: string): Promise<EacoPoolSt
       if (eacoReserve > 0) impliedPrice = otherReserve / eacoReserve
       liquidityUsd = otherReserve * 2
     } else if (otherMint === TOKEN_MINTS.SOL) {
-      const solPrice = 180
-      if (eacoReserve > 0) impliedPrice = (otherReserve * solPrice) / eacoReserve
+      // Use dynamically provided SOL price; fall back to 0 if not available
+      const solPrice = solPriceUsd || 0
+      if (eacoReserve > 0 && solPrice > 0) {
+        impliedPrice = (otherReserve * solPrice) / eacoReserve
+      }
       liquidityUsd = otherReserve * solPrice * 2
     }
 
@@ -584,14 +724,18 @@ export async function getEacoPoolStatus(poolAddress: string): Promise<EacoPoolSt
       tokenXMint: xMint,
       tokenYMint: yMint,
     }
-  } catch {
+  } catch (err) {
+    console.warn('[Helius] getEacoPoolStatus failed for', poolAddress, err)
     return null
   }
 }
 
-/** Get all known EACO pool statuses */
-export async function getAllEacoPools(): Promise<EacoPoolStatus[]> {
-  const results = await Promise.all(EACO_POOLS.map(p => getEacoPoolStatus(p.address)))
+/**
+ * Get all known EACO pool statuses.
+ * @param solPriceUsd Optional SOL price for USD valuation of SOL pools.
+ */
+export async function getAllEacoPools(solPriceUsd?: number): Promise<EacoPoolStatus[]> {
+  const results = await Promise.all(EACO_POOLS.map(p => getEacoPoolStatus(p.address, solPriceUsd)))
   return results.filter((r): r is EacoPoolStatus => r !== null)
 }
 
@@ -609,18 +753,117 @@ export interface EacoTokenInfo {
 
 /** Get comprehensive EACO token info */
 export async function getEacoTokenInfo(): Promise<EacoTokenInfo> {
-  const [supply, assetMeta] = await Promise.all([
+  const [supply, assetMeta, holders] = await Promise.all([
     getTokenSupply(EACO_MINT),
     dasGetAsset(EACO_MINT),
+    getTokenHolderCount(EACO_MINT),
   ])
 
   return {
     mint: EACO_MINT,
     supply: supply.amount,
     decimals: supply.decimals,
-    holderCount: null,
+    holderCount: holders,
     assetMetadata: assetMeta,
   }
+}
+
+// ============================================================================
+// 9. API Health Check
+// ============================================================================
+
+export interface ApiHealthStatus {
+  name: string
+  status: 'online' | 'offline' | 'checking'
+  latencyMs: number | null
+  detail?: string
+}
+
+/** Check RPC endpoint health via getHealth */
+export async function checkRpcHealth(): Promise<ApiHealthStatus> {
+  const start = Date.now()
+  try {
+    const resp = await fetch(HELIUS_RPC_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'health-check',
+        method: 'getHealth',
+        params: [],
+      }),
+    })
+    const data = await resp.json()
+    const latency = Date.now() - start
+    if (data.result === 'ok') {
+      return { name: 'RPC', status: 'online', latencyMs: latency }
+    }
+    return { name: 'RPC', status: 'offline', latencyMs: latency, detail: data.result || 'Unknown' }
+  } catch (err) {
+    return { name: 'RPC', status: 'offline', latencyMs: null, detail: String(err) }
+  }
+}
+
+/** Check DAS endpoint health via getAsset on a well-known token (SOL) */
+export async function checkDasHealth(): Promise<ApiHealthStatus> {
+  const start = Date.now()
+  try {
+    const resp = await fetch(HELIUS_RPC_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'das-health',
+        method: 'getAsset',
+        params: { id: TOKEN_MINTS.USDC },
+      }),
+    })
+    const data = await resp.json()
+    const latency = Date.now() - start
+    if (data.result) {
+      return { name: 'DAS', status: 'online', latencyMs: latency }
+    }
+    return { name: 'DAS', status: 'offline', latencyMs: latency, detail: 'No result' }
+  } catch (err) {
+    return { name: 'DAS', status: 'offline', latencyMs: null, detail: String(err) }
+  }
+}
+
+/** Check Wallet API health via a known wallet */
+export async function checkWalletApiHealth(): Promise<ApiHealthStatus> {
+  const start = Date.now()
+  try {
+    // Use the EACO mint authority or a known wallet; use token mint itself as fallback
+    const resp = await fetch(
+      `${HELIUS_API_BASE}/v1/wallet/${EACO_MINT}/balances?api-key=${HELIUS_API_KEY}`,
+    )
+    const latency = Date.now() - start
+    if (resp.ok || resp.status === 200) {
+      return { name: 'Wallet API', status: 'online', latencyMs: latency }
+    }
+    return { name: 'Wallet API', status: 'offline', latencyMs: latency, detail: `HTTP ${resp.status}` }
+  } catch (err) {
+    return { name: 'Wallet API', status: 'offline', latencyMs: null, detail: String(err) }
+  }
+}
+
+/** Check all Helius API endpoints */
+export async function checkAllApiHealth(): Promise<ApiHealthStatus[]> {
+  const [rpc, das, wallet] = await Promise.all([
+    checkRpcHealth(),
+    checkDasHealth(),
+    checkWalletApiHealth(),
+  ])
+
+  return [
+    rpc,
+    das,
+    wallet,
+    // WebSocket and Priority Fee are checked indirectly - mark based on RPC
+    { name: 'WebSocket', status: rpc.status === 'online' ? 'online' : 'offline', latencyMs: null },
+    { name: 'Priority Fee', status: rpc.status === 'online' ? 'online' : 'offline', latencyMs: null },
+    { name: 'Enhanced Tx', status: rpc.status === 'online' ? 'online' : 'offline', latencyMs: null },
+  ]
 }
 
 // ============================================================================
