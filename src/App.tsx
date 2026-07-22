@@ -6,10 +6,12 @@ import EacoContractPanel from './components/EacoContractPanel'
 import PoolMonitor from './components/PoolMonitor'
 import WalletLookup from './components/WalletLookup'
 import HeliusPanel from './components/HeliusPanel'
+import PriorityFeePanel from './components/PriorityFeePanel'
+import TransactionParserPanel from './components/TransactionParserPanel'
 import Footer from './components/Footer'
 import { useLanguage } from './contexts/LanguageContext'
-import { fetchAllTokenPrices, fetchForexRates, buildCountryRates, type TokenPrice, type CountryRate, type BaseCurrency } from './data/rates'
-import { getAllEacoPools, getEacoTokenInfo, getEacoPoolStatus, type EacoPoolStatus, type EacoTokenInfo } from './lib/helius'
+import { fetchAllTokenPrices, fetchForexRates, buildCountryRates, fetchSolPrice, type TokenPrice, type CountryRate, type BaseCurrency } from './data/rates'
+import { getAllEacoPools, getEacoTokenInfo, getEacoPoolStatus, subscribeToAccount, type EacoPoolStatus, type EacoTokenInfo } from './lib/helius'
 
 const REFRESH_INTERVAL = 30 // seconds
 
@@ -25,13 +27,18 @@ export default function App() {
   const [countdown, setCountdown] = useState(REFRESH_INTERVAL)
   const [loading, setLoading] = useState(true)
   const [wsConnected, setWsConnected] = useState(false)
+  const [solPrice, setSolPrice] = useState<number>(0)
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const refreshData = useCallback(async () => {
     setLoading(true)
 
-    // Fetch EACO pool data first to get on-chain price
-    const poolResults = await getAllEacoPools()
+    // Fetch SOL price first (needed for pool USD valuation)
+    const solPriceUsd = await fetchSolPrice()
+    setSolPrice(solPriceUsd)
+
+    // Fetch EACO pool data with real SOL price for valuation
+    const poolResults = await getAllEacoPools(solPriceUsd)
     setPools(poolResults)
 
     // Get EACO implied price from pools
@@ -48,14 +55,13 @@ export default function App() {
 
     // Fetch token prices and forex rates in parallel
     const [prices, forex] = await Promise.all([
-      fetchAllTokenPrices(eacoPrice),
+      fetchAllTokenPrices(eacoPrice, solPriceUsd),
       fetchForexRates(),
     ])
 
     setTokenPrices(prices)
 
-    const solPrice = prices.find(p => p.symbol === 'SOL')?.priceUsd || 0
-    setCountryRates(buildCountryRates(forex, solPrice))
+    setCountryRates(buildCountryRates(forex, solPriceUsd))
 
     // Fetch EACO token info
     const info = await getEacoTokenInfo()
@@ -85,28 +91,40 @@ export default function App() {
     return () => { if (countdownRef.current) clearInterval(countdownRef.current) }
   }, [refreshData])
 
-  // WebSocket connection for real-time pool updates
+  // Real WebSocket connection for real-time pool updates
   useEffect(() => {
     let sub: { close: () => void } | null = null
+    let isMounted = true
 
     async function setupWs() {
       // Subscribe to EACO/USDT pool for real-time updates
       const poolAddr = '6ZfCi3qzhgDN1ygHVYXvfsfrwz8ZhQ7hD5mJtjeuUDyE'
-      sub = subscribePool(poolAddr, () => {
-        setWsConnected(true)
-        // Re-fetch pool data on change
-        getEacoPoolStatus(poolAddr).then(status => {
-          if (status) {
-            setPools(prev => prev.map(p => p.address === poolAddr ? status : p))
+      sub = subscribeToAccount(
+        poolAddr,
+        () => {
+          if (!isMounted) return
+          // Re-fetch pool data on change
+          getEacoPoolStatus(poolAddr, solPrice).then(status => {
+            if (status && isMounted) {
+              setPools(prev => prev.map(p => p.address === poolAddr ? status : p))
+            }
+          })
+        },
+        (connected: boolean) => {
+          if (isMounted) {
+            setWsConnected(connected)
           }
-        })
-      })
+        },
+      )
     }
 
-    // For now, simulate WS connection status
-    setWsConnected(true)
-    return () => { sub?.close() }
-  }, [])
+    setupWs()
+
+    return () => {
+      isMounted = false
+      sub?.close()
+    }
+  }, [solPrice])
 
   const getTokenPrice = (symbol: string): number => {
     return tokenPrices.find(p => p.symbol === symbol)?.priceUsd || 0
@@ -152,6 +170,12 @@ export default function App() {
         {/* Wallet Lookup */}
         <WalletLookup />
 
+        {/* Priority Fee Panel */}
+        <PriorityFeePanel />
+
+        {/* Transaction Parser Panel */}
+        <TransactionParserPanel />
+
         {/* Helius API Panel */}
         <HeliusPanel />
       </main>
@@ -159,13 +183,4 @@ export default function App() {
       <Footer />
     </div>
   )
-}
-
-// Inline import to avoid circular dependency issues
-import { subscribeToAccount } from './lib/helius'
-
-function subscribePool(poolAddress: string, callback: () => void) {
-  return subscribeToAccount(poolAddress, () => {
-    callback()
-  })
 }
