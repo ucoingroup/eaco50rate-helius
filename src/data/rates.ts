@@ -169,12 +169,23 @@ export async function fetchForexRates(): Promise<Record<string, number>> {
 }
 
 /** Fetch all token prices in parallel */
-export async function fetchAllTokenPrices(eacoPrice?: number): Promise<TokenPrice[]> {
-  const [solPrice, usdtPrice, usdcPrice] = await Promise.all([
+export async function fetchAllTokenPrices(
+  eacoPrice?: number,
+  solPriceOverride?: number,
+): Promise<TokenPrice[]> {
+  const [solPriceFetched, usdtPrice, usdcPrice, forex] = await Promise.all([
     fetchSolPrice(),
     fetchUsdtPrice(),
     fetchUsdcPrice(),
+    fetchForexRates(),
   ])
+
+  // Use override if provided (from App.tsx which already fetched it), otherwise use fetched
+  const solPrice = solPriceOverride || solPriceFetched
+
+  // Calculate eCNH price from CNY forex rate (1 eCNH ~ 1 CNY)
+  const cnyRate = forex['CNY'] || 7.1 // fallback if forex API fails
+  const ecnhPriceUsd = cnyRate > 0 ? 1 / cnyRate : 0.139
 
   const now = Date.now()
   const tokens: TokenPrice[] = [
@@ -212,10 +223,10 @@ export async function fetchAllTokenPrices(eacoPrice?: number): Promise<TokenPric
       symbol: 'eCNH',
       name: 'e-CNHC',
       mint: '7GQnqthWKa5v2GqXYWhmgWZY5mCRrniwK3Xuinm9GKw5',
-      priceUsd: 0.139, // approximate eCNH rate (1 eCNH ~ 1 CNY ~ 0.139 USD)
+      priceUsd: ecnhPriceUsd,
       change24h: null,
       marketCap: null,
-      source: 'eCNH Oracle',
+      source: 'Forex CNY Rate',
       lastUpdate: now,
     },
     {
