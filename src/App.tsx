@@ -13,7 +13,7 @@ import { useLanguage } from './contexts/LanguageContext'
 import { fetchAllTokenPrices, fetchForexRates, buildCountryRates, fetchSolPrice, type TokenPrice, type CountryRate, type BaseCurrency } from './data/rates'
 import { getAllEacoPools, getEacoTokenInfo, getEacoPoolStatus, subscribeToAccount, type EacoPoolStatus, type EacoTokenInfo } from './lib/helius'
 
-const REFRESH_INTERVAL = 30 // seconds
+const REFRESH_INTERVAL = 1800 // 30 minutes in seconds
 
 export default function App() {
   const { t } = useLanguage()
