@@ -26,6 +26,11 @@ export default function Header({ countdown, maxCountdown, lastUpdate, onRefresh,
   const currentLang = languages.find(l => l.code === lang) || languages[0]
   const progress = ((maxCountdown - countdown) / maxCountdown) * 100
   const lastUpdateStr = lastUpdate ? new Date(lastUpdate).toLocaleTimeString() : '--'
+  const countdownMin = Math.floor(countdown / 60)
+  const countdownSec = countdown % 60
+  const countdownStr = maxCountdown >= 120
+    ? `${countdownMin}:${countdownSec.toString().padStart(2, '0')}`
+    : `${countdown}s`
 
   return (
     <header className="sticky top-0 z-50 border-b border-white/5 glass-card">
@@ -55,7 +60,7 @@ export default function Header({ countdown, maxCountdown, lastUpdate, onRefresh,
                 style={{ width: `${progress}%` }}
               />
             </div>
-            <span className="font-mono text-green-400 min-w-[2.5rem] text-right">{countdown}s</span>
+            <span className="font-mono text-green-400 min-w-[2.5rem] text-right">{countdownStr}</span>
           </div>
         </div>
 
@@ -114,7 +119,7 @@ export default function Header({ countdown, maxCountdown, lastUpdate, onRefresh,
       <div className="md:hidden px-4 pb-2">
         <div className="flex items-center justify-between text-xs text-gray-500">
           <span>{t.lastUpdate}: <span className="text-gray-300 font-mono">{lastUpdateStr}</span></span>
-          <span className="font-mono text-green-400">{countdown}s</span>
+          <span className="font-mono text-green-400">{countdownStr}</span>
         </div>
       </div>
     </header>
